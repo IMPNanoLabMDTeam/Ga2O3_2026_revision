@@ -1,0 +1,18 @@
+LAMMPS (23 Jun 2022)
+OMP_NUM_THREADS environment is not set. Defaulting to 1 thread. (src/comm.cpp:98)
+  using 1 OpenMP thread(s) per MPI task
+# LAMMPS input script for calculating forces, potential energy, and virial
+# This script will be symlinked to subdirectories containing model.data files
+# Using NEP (Neuroevolution Potential)
+# Atom types: 1=O, 2=Ga
+
+units           metal
+atom_style      atomic
+boundary        p p p
+
+# Read in atomic data file
+read_data       model.data
+Reading data file ...
+  triclinic box = (0 0 0) to (5.0232059 4.3502243 13.52283) with tilt (-2.5116029 0 0)
+ERROR: Triclinic box skew is too large (src/domain.cpp:222)
+Last command: read_data       model.data

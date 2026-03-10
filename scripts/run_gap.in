@@ -1,0 +1,87 @@
+# LAMMPS input script for calculating forces, potential energy, and virial
+# This script will be symlinked to subdirectories containing model.data files
+# Atom types: 1=O, 2=Ga
+
+units           metal
+atom_style      atomic
+boundary        p p p
+
+# Read in atomic data file
+read_data       model.data
+
+# Set masses (O=1, Ga=2)
+mass            1 15.9994  # O
+mass            2 69.723   # Ga
+
+# tabGAP potential
+pair_style      hybrid/overlay eam/fs tabgap
+pair_coeff      * * eam/fs Ga-O.eam.fs O Ga
+pair_coeff      * * tabgap Ga-O.tabgap O Ga no yes
+
+# Neighbor list settings
+neighbor        2.0 bin
+neigh_modify    delay 0 every 1 check yes
+
+# Compute per-atom properties
+compute         pe_atom all pe/atom
+compute         virial_atom all stress/atom NULL virial
+
+# Compute global virial (sum of all per-atom virials)
+compute         virial_global all pressure NULL virial
+# Convert from bar to eV/Angstrom^3: bar * 6.242e-7 = eV/Angstrom^3
+# Then multiply by volume to get total virial in eV
+# Finally divide by atoms to get average virial per atom in eV/atom
+variable        vxx equal c_virial_global[1]*vol*6.242e-7/atoms  # eV/atom
+variable        vyy equal c_virial_global[2]*vol*6.242e-7/atoms  # eV/atom
+variable        vzz equal c_virial_global[3]*vol*6.242e-7/atoms  # eV/atom
+variable        vxy equal c_virial_global[4]*vol*6.242e-7/atoms  # eV/atom
+variable        vxz equal c_virial_global[5]*vol*6.242e-7/atoms  # eV/atom
+variable        vyz equal c_virial_global[6]*vol*6.242e-7/atoms  # eV/atom
+
+# Compute global properties
+variable        ape equal pe/atoms  # Average potential energy per atom (eV/atom)
+
+# Thermo output
+thermo          1
+thermo_style    custom step v_ape pe
+thermo_modify   format float "%20.12f"
+
+# Output per-atom forces (eV/Angstrom)
+dump            forces all custom 1 dump.forces id type x y z fx fy fz
+dump_modify     forces sort id format float "%20.12f"
+
+# Output per-atom potential energy (eV/atom)
+dump            pe all custom 1 dump.pe id type c_pe_atom
+dump_modify     pe sort id format float "%20.12f"
+
+# Output per-atom virial (eV)
+# Virial components: xx, yy, zz, xy, xz, yz
+# Convert from bar*Angstrom^3 to eV: multiply by 6.242e-7
+variable        vol_per_atom equal vol/atoms
+variable        conv_factor equal 6.242e-7
+# Define per-atom variables for converted virial components
+variable        vir_xx atom c_virial_atom[1]*6.242e-7
+variable        vir_yy atom c_virial_atom[2]*6.242e-7
+variable        vir_zz atom c_virial_atom[3]*6.242e-7
+variable        vir_xy atom c_virial_atom[4]*6.242e-7
+variable        vir_xz atom c_virial_atom[5]*6.242e-7
+variable        vir_yz atom c_virial_atom[6]*6.242e-7
+dump            virial all custom 1 dump.virial id type v_vir_xx v_vir_yy v_vir_zz v_vir_xy v_vir_xz v_vir_yz
+dump_modify     virial sort id format float "%20.12f"
+
+# Run 0 steps to calculate properties for the initial configuration
+run             0
+
+# Output summary to file
+variable        natoms equal atoms
+print           "# Summary of calculations" file summary.txt screen no
+print           "Number of atoms: ${natoms}" append summary.txt screen no
+print           "Average potential energy (eV/atom): ${ape}" append summary.txt screen no
+print           "Volume per atom (Angstrom^3): ${vol_per_atom}" append summary.txt screen no
+print           "Average virial per atom (eV/atom):" append summary.txt screen no
+print           "  vxx = ${vxx}" append summary.txt screen no
+print           "  vyy = ${vyy}" append summary.txt screen no
+print           "  vzz = ${vzz}" append summary.txt screen no
+print           "  vxy = ${vxy}" append summary.txt screen no
+print           "  vxz = ${vxz}" append summary.txt screen no
+print           "  vyz = ${vyz}" append summary.txt screen no

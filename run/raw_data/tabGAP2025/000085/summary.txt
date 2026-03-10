@@ -1,0 +1,11 @@
+# Summary of calculations
+Number of atoms: 160
+Average potential energy (eV/atom): -5.92400816291428
+Volume per atom (Angstrom^3): 10.7810156934786
+Average virial per atom (eV/atom):
+  vxx = 0.149719415859237
+  vyy = 0.155783160297771
+  vzz = 0.207491868688107
+  vxy = -7.82560071687807e-05
+  vxz = -0.0853789805521031
+  vyz = -0.00908907464806689

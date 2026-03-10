@@ -1,0 +1,1 @@
+../../../../forcefield/tabGAP/Ga-O.eam.fs

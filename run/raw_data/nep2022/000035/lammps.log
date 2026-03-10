@@ -1,0 +1,136 @@
+LAMMPS (23 Jun 2022)
+OMP_NUM_THREADS environment is not set. Defaulting to 1 thread. (src/comm.cpp:98)
+  using 1 OpenMP thread(s) per MPI task
+# LAMMPS input script for calculating forces, potential energy, and virial
+# This script will be symlinked to subdirectories containing model.data files
+# Using NEP (Neuroevolution Potential)
+# Atom types: 1=O, 2=Ga
+
+units           metal
+atom_style      atomic
+boundary        p p p
+
+# Read in atomic data file
+read_data       model.data
+Reading data file ...
+  orthogonal box = (0 0 0) to (8.8725482 5.1667634 9.4938873)
+  1 by 1 by 1 MPI processor grid
+  reading atoms ...
+  40 atoms
+  read_data CPU = 0.002 seconds
+
+# Set masses (O=1, Ga=2)
+mass            1 15.9994  # O
+mass            2 69.723   # Ga
+
+# NEP potential
+pair_style      nep
+pair_coeff      * * nep.txt O Ga
+
+# Neighbor list settings
+neighbor        2.0 bin
+neigh_modify    delay 0 every 1 check yes
+
+# Compute per-atom properties
+compute         pe_atom all pe/atom
+compute         virial_atom all stress/atom NULL virial
+
+# Compute global virial (sum of all per-atom virials)
+compute         virial_global all pressure NULL virial
+# Convert from bar to eV/Angstrom^3: bar * 6.242e-7 = eV/Angstrom^3
+# Then multiply by volume to get total virial in eV
+# Finally divide by atoms to get average virial per atom in eV/atom
+variable        vxx equal c_virial_global[1]*vol*6.242e-7/atoms  # eV/atom
+variable        vyy equal c_virial_global[2]*vol*6.242e-7/atoms  # eV/atom
+variable        vzz equal c_virial_global[3]*vol*6.242e-7/atoms  # eV/atom
+variable        vxy equal c_virial_global[4]*vol*6.242e-7/atoms  # eV/atom
+variable        vxz equal c_virial_global[5]*vol*6.242e-7/atoms  # eV/atom
+variable        vyz equal c_virial_global[6]*vol*6.242e-7/atoms  # eV/atom
+
+# Compute global properties
+variable        ape equal pe/atoms  # Average potential energy per atom (eV/atom)
+
+# Thermo output
+thermo          1
+thermo_style    custom step v_ape pe
+thermo_modify   format float "%20.12f"
+
+# Output per-atom forces (eV/Angstrom)
+dump            forces all custom 1 dump.forces id type x y z fx fy fz
+dump_modify     forces sort id format float "%20.12f"
+
+# Output per-atom potential energy (eV/atom)
+dump            pe all custom 1 dump.pe id type c_pe_atom
+dump_modify     pe sort id format float "%20.12f"
+
+# Output per-atom virial (eV)
+# Virial components: xx, yy, zz, xy, xz, yz
+# Convert from bar*Angstrom^3 to eV: multiply by 6.242e-7
+variable        vol_per_atom equal vol/atoms
+variable        conv_factor equal 1
+# Define per-atom variables for converted virial components
+variable        vir_xx atom c_virial_atom[1]*6.242e-7
+variable        vir_yy atom c_virial_atom[2]*6.242e-7
+variable        vir_zz atom c_virial_atom[3]*6.242e-7
+variable        vir_xy atom c_virial_atom[4]*6.242e-7
+variable        vir_xz atom c_virial_atom[5]*6.242e-7
+variable        vir_yz atom c_virial_atom[6]*6.242e-7
+dump            virial all custom 1 dump.virial id type v_vir_xx v_vir_yy v_vir_zz v_vir_xy v_vir_xz v_vir_yz
+dump_modify     virial sort id format float "%20.12f"
+
+# Run 0 steps to calculate properties for the initial configuration
+run             0
+WARNING: No fixes with time integration, atoms won't move (src/verlet.cpp:60)
+Neighbor list info ...
+  update every 1 steps, delay 0 steps, check yes
+  max neighbors/atom: 2000, page size: 100000
+  master list distance cutoff = 8
+  ghost atom cutoff = 8
+  binsize = 4, bins = 3 2 3
+  1 neighbor lists, perpetual/occasional/extra = 1 0 0
+  (1) pair nep, perpetual
+      attributes: full, newton on
+      pair build: full/bin/atomonly
+      stencil: full/bin/3d
+      bin: standard
+Per MPI rank memory allocation (min/avg/max) = 9.378 | 9.378 | 9.378 Mbytes
+   Step         v_ape          PotEng    
+         0       -8.509143936861    -340.365757474420
+Loop time of 3.356e-06 on 1 procs for 0 steps with 40 atoms
+
+59.6% CPU use with 1 MPI tasks x 1 OpenMP threads
+
+MPI task timing breakdown:
+Section |  min time  |  avg time  |  max time  |%varavg| %total
+---------------------------------------------------------------
+Pair    | 0          | 0          | 0          |   0.0 |  0.00
+Neigh   | 0          | 0          | 0          |   0.0 |  0.00
+Comm    | 0          | 0          | 0          |   0.0 |  0.00
+Output  | 0          | 0          | 0          |   0.0 |  0.00
+Modify  | 0          | 0          | 0          |   0.0 |  0.00
+Other   |            | 3.356e-06  |            |       |100.00
+
+Nlocal:             40 ave          40 max          40 min
+Histogram: 1 0 0 0 0 0 0 0 0 0
+Nghost:           1240 ave        1240 max        1240 min
+Histogram: 1 0 0 0 0 0 0 0 0 0
+Neighs:              0 ave           0 max           0 min
+Histogram: 1 0 0 0 0 0 0 0 0 0
+FullNghs:         8096 ave        8096 max        8096 min
+Histogram: 1 0 0 0 0 0 0 0 0 0
+
+Total # of neighbors = 8096
+Ave neighs/atom = 202.4
+Neighbor list builds = 0
+Dangerous builds = 0
+
+# Output summary to file
+variable        natoms equal atoms
+print           "# Summary of calculations" file summary.txt screen no
+print           "Number of atoms: ${natoms}" append summary.txt screen no
+print           "Average potential energy (eV/atom): ${ape}" append summary.txt screen no
+print           "Volume per atom (Angstrom^3): ${vol_per_atom}" append summary.txt screen no
+print           "Average virial per atom (eV/atom):" append summary.txt screen no
+print           "  vxx = ${vxx}" append summary.txt screen no
+ERROR: Variable vxx: Compute used in variable between runs is not current (src/variable.cpp:1414)
+Last command:   vxx = ${vxx

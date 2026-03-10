@@ -1,0 +1,5 @@
+# Summary of calculations
+Number of atoms: 40
+Average potential energy (eV/atom): -5.93860344871918
+Volume per atom (Angstrom^3): 10.9454481552927
+Average virial per atom (eV/atom):
