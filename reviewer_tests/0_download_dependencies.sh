@@ -22,7 +22,7 @@ cat <<'INTRO'
 - LAMMPS_2025_URL    : 指定 10Dec2025 tar.gz 下载地址
 - LAMMPS_2022_URL    : 指定 23Jun2022 tar.gz 下载地址
 - INTEL_MPI_URL      : 指定 Intel MPI/oneAPI 安装包地址
-- TABGAP_PLUGIN_REPO : 指定 tabGAP 插件 Git 地址（若不设置，默认使用 LAMMPS 插件集合）
+- TABGAP_PLUGIN_REPO : 指定 tabGAP 插件 Git 地址（默认 jezper/tabgap）
 - NEP_PLUGIN_REPO    : 指定 NEP_CPU 插件 Git 地址
 
 说明：
@@ -36,19 +36,36 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 DOWNLOAD_DIR="${REPO_ROOT}/opt/downloads"
 SRC_DIR="${REPO_ROOT}/opt/src"
 
+cd "${REPO_ROOT}"
 mkdir -p "${DOWNLOAD_DIR}" "${SRC_DIR}"
+
+is_valid_download_file() {
+  local file_path="$1"
+  if [[ ! -s "${file_path}" ]]; then
+    return 1
+  fi
+  if [[ "${file_path}" == *.tar.gz ]]; then
+    tar -tf "${file_path}" >/dev/null 2>&1 || return 1
+  fi
+  return 0
+}
 
 download_first_available() {
   local output_file="$1"
   shift
   local urls=("$@")
+  if is_valid_download_file "${output_file}"; then
+    echo "[跳过] 已下载：${output_file}"
+    return 0
+  fi
+  rm -f "${output_file}"
   local ok=0
   for u in "${urls[@]}"; do
     if [[ -z "${u}" ]]; then
       continue
     fi
     echo "[下载] ${u}"
-    if curl -fL --retry 3 --connect-timeout 20 -o "${output_file}" "${u}"; then
+    if wget -O "${output_file}" --tries=3 --timeout=20 --continue --no-verbose "${u}"; then
       ok=1
       break
     fi
@@ -66,7 +83,23 @@ extract_lammps_tarball() {
     echo "[跳过] 已存在：${expected_dir}"
     return 0
   fi
+  if ! tar -tf "${tarball}" >/dev/null 2>&1; then
+    echo "[错误] 压缩包不可用或损坏：${tarball}" >&2
+    return 1
+  fi
+  local topdir
+  topdir="$(tar -tf "${tarball}" | awk -F/ 'NR==1{first=$1} END{print first}')"
+  if [[ -n "${topdir}" && -d "${SRC_DIR}/${topdir}" ]]; then
+    mv "${SRC_DIR}/${topdir}" "${expected_dir}"
+    echo "[完成] 复用已解压目录：${expected_dir}"
+    return 0
+  fi
+  echo "[解压] ${tarball} -> ${expected_dir}"
   tar -xf "${tarball}" -C "${SRC_DIR}"
+  if [[ -n "${topdir}" && "${SRC_DIR}/${topdir}" != "${expected_dir}" && -d "${SRC_DIR}/${topdir}" && ! -d "${expected_dir}" ]]; then
+    mv "${SRC_DIR}/${topdir}" "${expected_dir}"
+  fi
+  echo "[完成] 解压完成：${expected_dir}"
 }
 
 clone_or_update_repo() {
@@ -84,16 +117,36 @@ clone_or_update_repo() {
     if [[ -z "${r}" ]]; then
       continue
     fi
-    echo "[克隆] ${r} -> ${dest}"
-    if git clone --depth 1 "${r}" "${dest}"; then
-      ok=1
-      break
-    fi
+    for attempt in 1 2 3; do
+      rm -rf "${dest}"
+      echo "[克隆] ${r} -> ${dest} (尝试 ${attempt}/3)"
+      if git clone --depth 1 "${r}" "${dest}"; then
+        ok=1
+        break 2
+      fi
+      sleep 2
+    done
   done
   if [[ "${ok}" -ne 1 ]]; then
     echo "[错误] 无法克隆仓库：${dest}" >&2
     return 1
   fi
+}
+
+download_repo_archive() {
+  local archive_url="$1"
+  local dest="$2"
+  local temp_tar="${DOWNLOAD_DIR}/repo_archive_$(date +%s%N).tar.gz"
+  echo "[下载归档] ${archive_url}"
+  wget -O "${temp_tar}" --tries=3 --timeout=20 --continue --no-verbose "${archive_url}"
+  local topdir
+  topdir="$(tar -tf "${temp_tar}" | awk -F/ 'NR==1{first=$1} END{print first}')"
+  rm -rf "${dest}"
+  tar -xf "${temp_tar}" -C "${SRC_DIR}"
+  if [[ -n "${topdir}" && -d "${SRC_DIR}/${topdir}" ]]; then
+    mv "${SRC_DIR}/${topdir}" "${dest}"
+  fi
+  rm -f "${temp_tar}"
 }
 
 LMP_2025_TAR="${DOWNLOAD_DIR}/lammps-10Dec2025.tar.gz"
@@ -102,7 +155,7 @@ INTEL_MPI_INSTALLER="${DOWNLOAD_DIR}/intel_mpi_or_hpc_toolkit.sh"
 
 LMP_2025_URLS=(
   "${LAMMPS_2025_URL:-}"
-  "https://github.com/lammps/lammps/releases/download/stable_10Dec2025/lammps-src-10Dec2025.tar.gz"
+  "https://github.com/lammps/lammps/archive/refs/tags/patch_10Dec2025.tar.gz"
   "https://download.lammps.org/tars/lammps-10Dec2025.tar.gz"
   "https://download.lammps.org/tars/stable/lammps-10Dec2025.tar.gz"
 )
@@ -116,8 +169,8 @@ LMP_2022_URLS=(
 
 INTEL_MPI_URLS=(
   "${INTEL_MPI_URL:-}"
-  "https://registrationcenter-download.intel.com/akdlm/IRC_NAS/19144/l_HPCKit_p_2024.1.0.596_offline.sh"
-  "https://registrationcenter-download.intel.com/akdlm/IRC_NAS/1/l_mpi_oneapi_p_2021.12.1.8_offline.sh"
+  "https://registrationcenter-download.intel.com/akdlm/IRC_NAS/4f5871da-0533-4f62-b563-905edfb2e9b7/l_mpi_oneapi_p_2021.10.0.49374_offline.sh"
+  "https://registrationcenter-download.intel.com/akdlm/IRC_NAS/1ff1b38a-8218-4c53-9956-f0b264de35a4/l_HPCKit_p_2023.1.0.46346_offline.sh"
 )
 
 echo "[阶段] 下载 LAMMPS 10Dec2025"
@@ -143,12 +196,15 @@ NEP_PLUGIN_CANDIDATES=(
   "${NEP_PLUGIN_REPO:-}"
   "https://github.com/brucefan1983/NEP_CPU.git"
 )
+NEP_PLUGIN_ARCHIVE_URL="${NEP_PLUGIN_ARCHIVE_URL:-https://codeload.github.com/brucefan1983/NEP_CPU/tar.gz/refs/heads/master}"
 
 echo "[阶段] 下载 tabGAP 插件源码"
 clone_or_update_repo "${SRC_DIR}/tabgap-plugin" "${TABGAP_PLUGIN_CANDIDATES[@]}"
 
 echo "[阶段] 下载 NEP_CPU 插件源码"
-clone_or_update_repo "${SRC_DIR}/nep-cpu-plugin" "${NEP_PLUGIN_CANDIDATES[@]}"
+if ! clone_or_update_repo "${SRC_DIR}/nep-cpu-plugin" "${NEP_PLUGIN_CANDIDATES[@]}"; then
+  download_repo_archive "${NEP_PLUGIN_ARCHIVE_URL}" "${SRC_DIR}/nep-cpu-plugin"
+fi
 
 echo "================================================================================"
 echo "下载完成"
