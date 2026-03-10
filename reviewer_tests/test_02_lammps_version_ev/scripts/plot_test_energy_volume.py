@@ -995,7 +995,7 @@ def plot_multi_model_comparison(multi_model_data, output_filename, model_names=N
     return plt
 
 
-REPO_ROOT = Path("/home/abel/workspace/Ga2O3_2026_revision")
+REPO_ROOT = Path(os.environ.get("GA2O3_REPO_ROOT", Path(__file__).resolve().parents[3]))
 ONE_CLICK_CONFIG = {
     "lammps_versions": [
         {"tag": "lammps2025", "exe": REPO_ROOT / "opt/lammps-10Dec2025/bin/lmp"},

@@ -808,7 +808,7 @@ def plot_energy_volume_comparison(data, output_filename, model_name="Model"):
     return plt
 
 
-def plot_multi_model_comparison(multi_model_data, output_filename, model_names=None):
+def plot_multi_model_comparison(multi_model_data, output_filename, model_names=None, dft_mode="shared"):
     """Plot multiple models vs DFT energy-volume comparison
     
     Args:
@@ -822,7 +822,7 @@ def plot_multi_model_comparison(multi_model_data, output_filename, model_names=N
         model_names = [f"Model {i+1}" for i in range(len(multi_model_data))]
     
     # Group data by config_type for each model
-    models_by_config = {}  # {config_type: {vol_key: {'volume': ..., 'dft': ..., 'models': {model_idx: energy}}}}
+    models_by_config = {}  # {config_type: {vol_key: {'volume': ..., 'dft': ..., 'dft_by_model': {model_idx: dft}, 'models': {model_idx: energy}}}}
     
     # First pass: collect all config types and organize data
     for model_idx, data in enumerate(multi_model_data):
@@ -841,9 +841,11 @@ def plot_multi_model_comparison(multi_model_data, output_filename, model_names=N
                 models_by_config[config_type][vol_key] = {
                     'volume': volume_per_atom,
                     'dft': dft_energy,
+                    'dft_by_model': {},
                     'models': {}
                 }
             
+            models_by_config[config_type][vol_key]['dft_by_model'][model_idx] = dft_energy
             models_by_config[config_type][vol_key]['models'][model_idx] = predicted_energy
     
     # Set up figure using GridSpec
@@ -919,16 +921,36 @@ def plot_multi_model_comparison(multi_model_data, output_filename, model_names=N
         sorted_data = sorted(vol_dict.items(), key=lambda x: x[1]['volume'])
         
         volumes = [item[1]['volume'] for item in sorted_data]
-        dft_energies = [item[1]['dft'] for item in sorted_data]
+        dft_energies_shared = [item[1]['dft'] for item in sorted_data]
         
-        # Plot DFT reference (hollow circles, dotted line)
-        ax.scatter(volumes, dft_energies, 
-                  color=color, marker='o', s=80, alpha=0.6, 
-                  facecolors='none', edgecolors=color, linewidths=2,
-                  label=f'{display_name} DFT', zorder=10)
-        if len(volumes) > 1:
-            ax.plot(volumes, dft_energies, color=color, alpha=0.3, 
-                   linewidth=2, linestyle=':', zorder=5)
+        if dft_mode == "per_model":
+            for model_idx in range(len(multi_model_data)):
+                dft_model = []
+                dft_model_vol = []
+                for item in sorted_data:
+                    if model_idx in item[1]['dft_by_model']:
+                        dft_model.append(item[1]['dft_by_model'][model_idx])
+                        dft_model_vol.append(item[1]['volume'])
+                if not dft_model:
+                    continue
+                marker = model_markers[model_idx % len(model_markers)]
+                linestyle = model_linestyles[model_idx % len(model_linestyles)]
+                ax.scatter(dft_model_vol, dft_model,
+                          color=color, marker=marker, s=78, alpha=0.55,
+                          facecolors='none', edgecolors=color, linewidths=2,
+                          label=f'{display_name} DFT {model_names[model_idx]}', zorder=10)
+                if len(dft_model_vol) > 1:
+                    ax.plot(dft_model_vol, dft_model, color=color, alpha=0.3,
+                           linewidth=1.8, linestyle=linestyle, zorder=5)
+        else:
+            # Plot shared DFT reference (hollow circles, dotted line)
+            ax.scatter(volumes, dft_energies_shared,
+                      color=color, marker='o', s=80, alpha=0.6,
+                      facecolors='none', edgecolors=color, linewidths=2,
+                      label=f'{display_name} DFT', zorder=10)
+            if len(volumes) > 1:
+                ax.plot(volumes, dft_energies_shared, color=color, alpha=0.3,
+                       linewidth=2, linestyle=':', zorder=5)
         
         # Plot each model's predictions
         for model_idx in range(len(multi_model_data)):
@@ -995,7 +1017,7 @@ def plot_multi_model_comparison(multi_model_data, output_filename, model_names=N
     return plt
 
 
-REPO_ROOT = Path("/home/abel/workspace/Ga2O3_2026_revision")
+REPO_ROOT = Path(os.environ.get("GA2O3_REPO_ROOT", Path(__file__).resolve().parents[3]))
 ONE_CLICK_CONFIG = {
     "lammps_versions": [
         {"tag": "lammps2025", "exe": REPO_ROOT / "opt/lammps-10Dec2025/bin/lmp"},
@@ -1168,6 +1190,7 @@ def main():
                     [all_results[key_opted]["data"], all_results[key_before]["data"]],
                     str(out),
                     ["opted", "before_opt"],
+                    dft_mode="per_model",
                 )
 
     for s in ONE_CLICK_CONFIG["structures"]:
@@ -1180,6 +1203,7 @@ def main():
                     [all_results[key_tabgap]["data"], all_results[key_nep]["data"]],
                     str(out),
                     ["TABGAP", "NEP"],
+                    dft_mode="shared",
                 )
 
     total_duration = (datetime.now() - start_time).total_seconds()
