@@ -1,5 +1,5 @@
-LAMMPS (10 Dec 2025 - Development - patch_10Dec2025-120-ga51f9ba0e7-modified)
-OMP_NUM_THREADS environment is not set. Defaulting to 1 thread.
+LAMMPS (23 Jun 2022)
+OMP_NUM_THREADS environment is not set. Defaulting to 1 thread. (src/comm.cpp:98)
   using 1 OpenMP thread(s) per MPI task
 # LAMMPS input script for calculating forces, potential energy, and virial
 # This script will be symlinked to subdirectories containing model.data files
@@ -80,10 +80,9 @@ dump_modify     virial sort id format float "%20.12f"
 
 # Run 0 steps to calculate properties for the initial configuration
 run             0
-WARNING: No fixes with time integration, atoms won't move
-For more information see https://docs.lammps.org/err0028 (src/verlet.cpp:60)
+WARNING: No fixes with time integration, atoms won't move (src/verlet.cpp:60)
 Neighbor list info ...
-  update: every = 1 steps, delay = 0 steps, check = yes
+  update every 1 steps, delay 0 steps, check yes
   max neighbors/atom: 2000, page size: 100000
   master list distance cutoff = 8
   ghost atom cutoff = 8
@@ -94,10 +93,10 @@ Neighbor list info ...
       pair build: full/bin/atomonly
       stencil: full/bin/3d
       bin: standard
-Per MPI rank memory allocation (min/avg/max) = 3.989 | 3.989 | 3.989 Mbytes
+Per MPI rank memory allocation (min/avg/max) = 9.416 | 9.416 | 9.416 Mbytes
    Step         v_ape          PotEng    
-         0       -8.499065267881   -1359.850442860974
-Loop time of 3.59e-07 on 1 procs for 0 steps with 160 atoms
+         0       -8.499065267881   -1359.850442860975
+Loop time of 2.72e-07 on 1 procs for 0 steps with 160 atoms
 
 0.0% CPU use with 1 MPI tasks x 1 OpenMP threads
 
@@ -109,7 +108,7 @@ Neigh   | 0          | 0          | 0          |   0.0 |  0.00
 Comm    | 0          | 0          | 0          |   0.0 |  0.00
 Output  | 0          | 0          | 0          |   0.0 |  0.00
 Modify  | 0          | 0          | 0          |   0.0 |  0.00
-Other   |            | 3.59e-07   |            |       |100.00
+Other   |            | 2.72e-07   |            |       |100.00
 
 Nlocal:            160 ave         160 max         160 min
 Histogram: 1 0 0 0 0 0 0 0 0 0
@@ -133,9 +132,5 @@ print           "Average potential energy (eV/atom): ${ape}" append summary.txt 
 print           "Volume per atom (Angstrom^3): ${vol_per_atom}" append summary.txt screen no
 print           "Average virial per atom (eV/atom):" append summary.txt screen no
 print           "  vxx = ${vxx}" append summary.txt screen no
-print           "  vyy = ${vyy}" append summary.txt screen no
-print           "  vzz = ${vzz}" append summary.txt screen no
-print           "  vxy = ${vxy}" append summary.txt screen no
-print           "  vxz = ${vxz}" append summary.txt screen no
-print           "  vyz = ${vyz}" append summary.txt screen no
-Total wall time: 0:00:00
+ERROR: Variable vxx: Compute used in variable between runs is not current (src/variable.cpp:1414)
+Last command:   vxx = ${vxx
