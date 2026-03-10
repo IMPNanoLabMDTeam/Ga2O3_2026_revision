@@ -128,30 +128,12 @@ enable_user_nep_package() {
   local cmake_lists="${lammps_src}/cmake/CMakeLists.txt"
   local nep_pkg="${lammps_src}/cmake/Modules/Packages/USER-NEP.cmake"
   cp "${NEP_SRC}/interface/lammps/USER-NEP.cmake" "${nep_pkg}"
-  python3 - "${cmake_lists}" <<'PY'
-import sys
-from pathlib import Path
-path = Path(sys.argv[1])
-lines = path.read_text().splitlines()
-for i, line in enumerate(lines):
-    if "foreach(PKG_WITH_INCL " in line and "USER-NEP" not in line and line.rstrip().endswith(")"):
-        lines[i] = line.rstrip()[:-1] + " USER-NEP)"
-        break
-start = -1
-end = -1
-for i, line in enumerate(lines):
-    if "set(STANDARD_PACKAGES" in line:
-        start = i
-        continue
-    if start != -1 and line.strip() == ")":
-        end = i
-        break
-if start != -1 and end != -1:
-    block_text = "\n".join(lines[start:end + 1])
-    if "USER-NEP" not in block_text:
-        lines.insert(end, "  USER-NEP")
-path.write_text("\n".join(lines) + "\n")
-PY
+  if ! grep -Eq 'foreach\(PKG_WITH_INCL .*USER-NEP' "${cmake_lists}"; then
+    sed -i '/foreach(PKG_WITH_INCL / s/)/ USER-NEP)/' "${cmake_lists}"
+  fi
+  if ! sed -n '/set(STANDARD_PACKAGES/,/)/p' "${cmake_lists}" | grep -q 'USER-NEP'; then
+    sed -i '/set(STANDARD_PACKAGES/,/)/ s/)/\n  USER-NEP)/' "${cmake_lists}"
+  fi
 }
 
 install_nep_to_lammps() {
@@ -318,6 +300,22 @@ EOF
   rm -f "${tmp_in}" "${tmp_help}"
 }
 
+verify_nep_pair_style() {
+  local lmp_bin="$1"
+  local label="$2"
+  local tmp_help
+  tmp_help="$(mktemp)"
+  "${lmp_bin}" -h > "${tmp_help}"
+  if grep -Eiq '(^|[[:space:]])nep([[:space:]]|$)' "${tmp_help}"; then
+    echo "[通过] ${label} 支持 pair_style nep"
+  else
+    echo "[错误] ${label} 未检测到 pair_style nep，NEP_CPU 未正确编译进 LAMMPS" >&2
+    rm -f "${tmp_help}"
+    exit 1
+  fi
+  rm -f "${tmp_help}"
+}
+
 echo "[阶段] 向两个版本源码接入插件"
 install_tabgap_to_lammps "${LMP2025_SRC}"
 install_nep_to_lammps "${LMP2025_SRC}"
@@ -333,6 +331,8 @@ build_lammps_2022_with_intel_mpi
 echo "[阶段] 执行基础测试"
 run_smoke_test "${PREFIX_2025}/bin/lmp" "LAMMPS 10Dec2025"
 run_smoke_test "${PREFIX_2022}/bin/lmp" "LAMMPS 23Jun2022 + Intel MPI"
+verify_nep_pair_style "${PREFIX_2025}/bin/lmp" "LAMMPS 10Dec2025"
+verify_nep_pair_style "${PREFIX_2022}/bin/lmp" "LAMMPS 23Jun2022 + Intel MPI"
 
 echo "================================================================================"
 echo "编译与测试完成"

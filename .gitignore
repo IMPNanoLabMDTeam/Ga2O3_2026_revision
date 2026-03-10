@@ -3,3 +3,5 @@ __pycache__/
 *.pyc
 run/raw_data/
 opt/
+reviewer_tests/test_01_relax_prepost_ev/results/raw_data/
+reviewer_tests/test_02_lammps_version_ev/results/raw_data/

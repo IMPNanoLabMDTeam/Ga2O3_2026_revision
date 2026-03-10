@@ -30,7 +30,6 @@ Examples:
     uv run python scripts/plot_test_energy_volume.py -f forcefield/nep/3.3.0.txt --skip-run
 """
 
-import argparse
 import os
 import sys
 import subprocess
@@ -996,554 +995,202 @@ def plot_multi_model_comparison(multi_model_data, output_filename, model_names=N
     return plt
 
 
-def generate_test_name(forcefield: str) -> str:
-    """Generate test name based on forcefield"""
-    ff_path = Path(forcefield)
-    if ff_path.is_file() and ff_path.suffix == '.txt':
-        ff_name = ff_path.stem
-    elif ff_path.is_dir() or ff_path.name == 'tabgap':
-        ff_name = 'tabgap'
-    else:
-        ff_name = ff_path.stem if ff_path.is_file() else ff_path.name
-    
-    return f"{ff_name}_test"
+REPO_ROOT = Path("/home/abel/workspace/Ga2O3_2026_revision")
+ONE_CLICK_CONFIG = {
+    "lammps_versions": [
+        {"tag": "lammps2025", "exe": REPO_ROOT / "opt/lammps-10Dec2025/bin/lmp"},
+    ],
+    "forcefields": [
+        {"tag": "tabgap", "path": REPO_ROOT / "forcefield/tabGAP", "potential_type": "tabgap"},
+        {"tag": "nep", "path": REPO_ROOT / "forcefield/nep/nep.txt", "potential_type": "nep"},
+    ],
+    "structures": [
+        {"tag": "opted", "xyz": REPO_ROOT / "model/test_opted.xyz"},
+        {"tag": "before_opt", "xyz": REPO_ROOT / "model/test_before_opt.xyz"},
+    ],
+    "run_scripts": {
+        "tabgap": REPO_ROOT / "scripts/run_gap.in",
+        "nep": REPO_ROOT / "scripts/run_nep.in",
+    },
+    "results_root": REPO_ROOT / "reviewer_tests/test_01_relax_prepost_ev/results",
+    "n_cores": os.cpu_count(),
+    "max_jobs": None,
+    "skip_run": False,
+    "align_to_tabgap": True,
+}
+
+
+def detect_supported_pair_styles(lammps_exe: Path):
+    try:
+        result = subprocess.run(
+            [str(lammps_exe), "-h"],
+            capture_output=True,
+            text=True,
+            timeout=60
+        )
+        if result.returncode != 0:
+            return set()
+        return set(re.findall(r"[A-Za-z0-9_./+-]+", result.stdout.lower()))
+    except Exception:
+        return set()
+
+
+def case_is_supported(potential_type, lammps_exe):
+    styles = detect_supported_pair_styles(Path(lammps_exe))
+    if potential_type == "nep":
+        return "nep" in styles
+    if potential_type == "tabgap":
+        return "tabgap" in styles
+    return True
+
+
+def run_one_case(structure_tag, structure_xyz, forcefield_tag, forcefield_path, potential_type, lammps_tag, lammps_exe):
+    case_key = f"{structure_tag}__{forcefield_tag}__{lammps_tag}"
+    results_root = ONE_CLICK_CONFIG["results_root"]
+    raw_data_dir = results_root / "raw_data" / case_key
+    figure_dir = results_root / "figures"
+    figure_dir.mkdir(parents=True, exist_ok=True)
+    raw_data_dir.mkdir(parents=True, exist_ok=True)
+    single_plot_path = figure_dir / f"ev_single__{case_key}.png"
+    run_script = ONE_CLICK_CONFIG["run_scripts"][potential_type]
+
+    print("=" * 100)
+    print(f"Case: {case_key}")
+    print(f"Structure: {structure_xyz}")
+    print(f"Forcefield: {forcefield_path}")
+    print(f"LAMMPS: {lammps_exe}")
+    print(f"Raw data: {raw_data_dir}")
+    print(f"Plot: {single_plot_path}")
+    print("=" * 100)
+
+    if not case_is_supported(potential_type, lammps_exe):
+        print(f"Skip case: {case_key} (LAMMPS {lammps_tag} does not support pair_style {potential_type})")
+        return case_key, None, raw_data_dir, single_plot_path
+
+    if not ONE_CLICK_CONFIG["skip_run"]:
+        frames = read_xyz_frames(str(structure_xyz))
+        save_frames_to_folders(frames, str(raw_data_dir))
+        convert_structures_to_lammps(str(raw_data_dir))
+        create_symlinks_forcefield(str(forcefield_path), str(raw_data_dir), potential_type)
+        create_symlinks_run_script(str(run_script), str(raw_data_dir))
+
+        found = shutil.which(str(lammps_exe))
+        lammps_path = Path(found) if found else Path(lammps_exe).resolve()
+        if not lammps_path.exists() or not os.access(str(lammps_path), os.X_OK):
+            raise RuntimeError(f"Cannot find executable LAMMPS: {lammps_exe}")
+
+        subdirs = [d for d in raw_data_dir.iterdir() if d.is_dir() and (d / "run.in").exists()]
+        subdirs = sorted(subdirs)
+        if ONE_CLICK_CONFIG["max_jobs"] is not None and ONE_CLICK_CONFIG["max_jobs"] > 0:
+            subdirs = subdirs[:ONE_CLICK_CONFIG["max_jobs"]]
+        tasks = [(lammps_path, subdir, i + 1, len(subdirs)) for i, subdir in enumerate(subdirs)]
+
+        success_count = 0
+        fail_count = 0
+        with ProcessPoolExecutor(max_workers=ONE_CLICK_CONFIG["n_cores"]) as executor:
+            future_to_task = {executor.submit(run_lammps_wrapper, task): task for task in tasks}
+            for future in as_completed(future_to_task):
+                _, _, success, _ = future.result()
+                if success:
+                    success_count += 1
+                else:
+                    fail_count += 1
+        print(f"Run complete: {success_count} successful, {fail_count} failed")
+        if success_count == 0:
+            print(f"Skip case: {case_key} (all runs failed)")
+            return case_key, None, raw_data_dir, single_plot_path
+
+    structures = read_test_xyz(str(structure_xyz), align_for_tabgap=ONE_CLICK_CONFIG["align_to_tabgap"])
+    predicted_energies = collect_predicted_energies(raw_data_dir)
+    combined_data = combine_data(structures, predicted_energies)
+
+    if ONE_CLICK_CONFIG["align_to_tabgap"] and potential_type == "nep":
+        valid_idx = 0
+        for struct_idx, struct in enumerate(structures):
+            if struct_idx < len(predicted_energies) and predicted_energies[struct_idx] is not None and valid_idx < len(combined_data):
+                if "alignment_offset" in struct:
+                    combined_data[valid_idx]["predicted_energy_per_atom"] += struct["alignment_offset"]
+                valid_idx += 1
+
+    if len(combined_data) == 0:
+        print(f"Skip case: {case_key} (no valid data)")
+        return case_key, None, raw_data_dir, single_plot_path
+
+    plot_energy_volume_comparison(combined_data, str(single_plot_path), model_name=forcefield_tag.upper())
+    return case_key, combined_data, raw_data_dir, single_plot_path
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Test Set Energy-Volume Comparison Plot (Single or Multi-Model)",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Examples:
-  # Single model: Use NEP potential (auto-generate name: 3.3.0_test)
-  uv run python draw_pics/plot_test_energy_volume.py -f forcefield/nep/3.3.0.txt
-  
-  # Single model: Use tabGAP potential (auto-generate name: tabgap_test)
-  uv run python draw_pics/plot_test_energy_volume.py -f forcefield/tabgap
-  
-  # Multi-model comparison: Compare 3 models
-  uv run python draw_pics/plot_test_energy_volume.py \\
-      --multi-model \\
-      -f forcefield/nep/3.3.0.txt forcefield/nep/4.5.0.txt forcefield/tabgap \\
-      -n 3.3.0 4.5.0 tabGAP \\
-      -o multi_model_comparison
-  
-  # Skip LAMMPS run (use existing results)
-  uv run python draw_pics/plot_test_energy_volume.py -f forcefield/nep/3.3.0.txt --skip-run
-  
-  # Limit to first 10 structures (testing)
-  uv run python draw_pics/plot_test_energy_volume.py -f forcefield/nep/3.3.0.txt --max-jobs 10
-        """
-    )
-    
-    parser.add_argument(
-        "-f", "--forcefield",
-        type=str,
-        nargs='+',
-        required=True,
-        help="Forcefield file(s) or directory (.txt=NEP, dir=tabGAP). Multiple values for multi-model mode."
-    )
-    parser.add_argument(
-        "-n", "--name",
-        type=str,
-        nargs='*',
-        default=None,
-        help="Model name(s) for display. For multi-model: provide name for each model."
-    )
-    parser.add_argument(
-        "-o", "--output-name",
-        type=str,
-        default=None,
-        help="Output name for multi-model comparison (e.g., 'multi_comparison')"
-    )
-    parser.add_argument(
-        "--multi-model",
-        action="store_true",
-        help="Enable multi-model comparison mode"
-    )
-    parser.add_argument(
-        "--test-xyz",
-        type=str,
-        default="/home/abel/workspace/Ga2O3_2026_revision/model/test.xyz",
-        help="Test xyz file path (default: train_dataset/nep_baseline/test.xyz)"
-    )
-    parser.add_argument(
-        "--run-script",
-        type=str,
-        default=None,
-        help="run.in script path (default: auto-select based on potential type)"
-    )
-    parser.add_argument(
-        "--lammps",
-        type=str,
-        default=None,
-        help="LAMMPS executable or command (default: selected by version tag)"
-    )
-    parser.add_argument(
-        "--lammps-version",
-        type=str,
-        choices=["2025", "2022"],
-        default="2025",
-        help="LAMMPS version tag (default: 2025)"
-    )
-    parser.add_argument(
-        "--lammps-2025",
-        type=str,
-        default="/home/abel/opt/lammps-nep-gap/build/lmp",
-        help="LAMMPS 2025 executable path"
-    )
-    parser.add_argument(
-        "--lammps-2022",
-        type=str,
-        default="/home/abel/opt/lammps-23Jun2022-intelmpi-2021.17.2/bin/lmp",
-        help="LAMMPS 2022 executable path"
-    )
-    parser.add_argument(
-        "--max-jobs",
-        type=int,
-        default=None,
-        help="Maximum number of jobs to run (default: unlimited)"
-    )
-    parser.add_argument(
-        "--skip-run",
-        action="store_true",
-        help="Skip LAMMPS run (use existing results)"
-    )
-    parser.add_argument(
-        "--n-cores",
-        type=int,
-        default=None,
-        help="Number of parallel processes (default: CPU count)"
-    )
-    
-    args = parser.parse_args()
-    if args.lammps is None:
-        args.lammps = args.lammps_2025 if args.lammps_version == "2025" else args.lammps_2022
-    
-    # Validate multi-model mode
-    if args.multi_model:
-        if len(args.forcefield) < 2:
-            print("Error: Multi-model mode requires at least 2 forcefields")
-            return 1
-        
-        if args.name and len(args.name) != len(args.forcefield):
-            print(f"Error: Number of names ({len(args.name)}) must match number of forcefields ({len(args.forcefield)})")
-            return 1
-        
-        if not args.output_name:
-            print("Error: Multi-model mode requires --output-name")
-            return 1
-        
-        return main_multi_model(args)
-    else:
-        # Single model mode - use first forcefield only
-        if len(args.forcefield) > 1:
-            print("Warning: Multiple forcefields provided but not in multi-model mode. Using first one only.")
-            print("         Use --multi-model flag for multi-model comparison.")
-        
-        args.forcefield = args.forcefield[0]
-        if args.name:
-            args.name = args.name[0] if args.name else None
-        
-        return main_single_model(args)
-
-
-def main_single_model(args):
-    """Single model workflow"""
-    # Auto-detect potential type
-    ff_path = Path(args.forcefield)
-    if ff_path.is_file() and ff_path.suffix == '.txt':
-        potential_type = "nep"
-    elif ff_path.is_dir():
-        potential_type = "tabgap"
-    else:
-        print(f"Warning: Cannot identify forcefield type, defaulting to tabgap")
-        potential_type = "tabgap"
-    
-    # Path management
-    workspace_root = Path(__file__).parent.parent
-    
-    # Auto-generate test name if not specified
-    if args.name is None:
-        test_name = generate_test_name(args.forcefield)
-        print(f"Auto-generated test name: {test_name}")
-    else:
-        test_name = args.name
-    
-    raw_data_dir = workspace_root / "run" / "raw_data" / test_name
-    output_dir = raw_data_dir
-    plot_output = workspace_root / "run" / "analysis" / test_name / "energy_volume_comparison.png"
-    plot_output.parent.mkdir(parents=True, exist_ok=True)
-    
-    # Set default run script based on potential type
-    if args.run_script is None:
-        if potential_type == "nep":
-            args.run_script = "scripts/run_nep.in"
-        else:
-            args.run_script = "scripts/run_gap.in"
-    
-    # Check input file
-    test_xyz_path = Path(args.test_xyz)
-    if not test_xyz_path.exists():
-        print(f"Error: Test xyz file {args.test_xyz} does not exist")
-        return 1
-    
-    print("=" * 80)
-    print("Test Set Energy-Volume Comparison Workflow")
-    print("=" * 80)
-    print(f"Test name: {test_name}")
-    print(f"Test xyz: {test_xyz_path}")
-    print(f"Potential type: {potential_type.upper()}")
-    print(f"Forcefield: {args.forcefield}")
-    print(f"Run script: {args.run_script}")
-    print(f"LAMMPS: {args.lammps} (version: {args.lammps_version})")
-    print(f"Output directory: {output_dir}")
-    print(f"Plot output: {plot_output}")
-    print("=" * 80)
-    
     start_time = datetime.now()
-    
-    # Step 1: Split xyz file
-    print("\n[Step 1/6] Splitting xyz file into separate frames...")
-    frames = read_xyz_frames(str(test_xyz_path))
-    print(f"  Read {len(frames)} frames")
-    
-    if not args.skip_run:
-        save_frames_to_folders(frames, str(output_dir))
-        print(f"  ✓ Saved to {output_dir}")
-        
-        # Step 2: Convert to LAMMPS format
-        print("\n[Step 2/6] Converting structure.xyz to LAMMPS format...")
-        success, fail = convert_structures_to_lammps(str(output_dir))
-        print(f"  ✓ Conversion complete: {success} successful, {fail} failed")
-        
-        # Step 3: Link forcefield files
-        print("\n[Step 3/6] Linking forcefield files...")
-        ff_count = create_symlinks_forcefield(args.forcefield, str(output_dir), potential_type)
-        print(f"  ✓ Created {ff_count} forcefield symlinks")
-        
-        # Step 4: Link run.in script
-        print("\n[Step 4/6] Linking run.in script...")
-        run_count = create_symlinks_run_script(args.run_script, str(output_dir))
-        print(f"  ✓ Created {run_count} run.in symlinks")
-        
-        # Step 5: Run LAMMPS in batch
-        print("\n[Step 5/6] Running LAMMPS calculations in batch...")
-        
-        lammps_candidate = args.lammps
-        found = shutil.which(lammps_candidate)
-        lammps_path = Path(found) if found else Path(lammps_candidate).resolve()
-        if not lammps_path.exists() or not os.access(str(lammps_path), os.X_OK):
-            print(f"  Error: Cannot find executable LAMMPS ({args.lammps}), check PATH or provide absolute path")
-            return 1
-        
-        subdirs = [d for d in output_dir.iterdir() if d.is_dir() and (d / "run.in").exists()]
-        subdirs = sorted(subdirs)
-        
-        if args.max_jobs is not None and args.max_jobs > 0:
-            subdirs = subdirs[:args.max_jobs]
-            print(f"  Limited to first {args.max_jobs} jobs")
-        
-        n_cores = args.n_cores if args.n_cores else os.cpu_count()
-        print(f"  Starting {len(subdirs)} jobs (using {n_cores} processes)...")
-        
-        success_count = 0
-        fail_count = 0
-        completed = 0
-        
-        tasks = [(lammps_path, subdir, i+1, len(subdirs)) for i, subdir in enumerate(subdirs)]
-        
-        with ProcessPoolExecutor(max_workers=n_cores) as executor:
-            future_to_task = {executor.submit(run_lammps_wrapper, task): task for task in tasks}
-            
-            for future in as_completed(future_to_task):
-                completed += 1
-                try:
-                    index, dir_name, success, message = future.result()
-                    
-                    if success:
-                        print(f"  [{completed}/{len(subdirs)}] {dir_name}: ✓ {message}")
-                        success_count += 1
-                    else:
-                        print(f"  [{completed}/{len(subdirs)}] {dir_name}: ✗ {message}")
-                        fail_count += 1
-                        
-                except Exception as e:
-                    print(f"  [{completed}/{len(subdirs)}] Task exception: {str(e)}")
-                    fail_count += 1
-        
-        print(f"  ✓ Run complete: {success_count} successful, {fail_count} failed")
-    else:
-        print("\n[Steps 2-5] Skipped LAMMPS run (using existing results)")
-    
-    # Step 6: Generate energy-volume comparison plot
-    print("\n[Step 6/6] Generating energy-volume comparison plot...")
-    
-    # Read test.xyz structures with energy alignment for tabGAP
-    align_for_tabgap = (potential_type == "tabgap")
-    if align_for_tabgap:
-        print("  Applying energy baseline alignment (NEP → TabGAP)")
-    
-    structures = read_test_xyz(str(test_xyz_path), align_for_tabgap=align_for_tabgap)
-    
-    # Collect predicted energies from LAMMPS output
-    predicted_energies = collect_predicted_energies(output_dir)
-    
-    # Combine data
-    combined_data = combine_data(structures, predicted_energies)
-    
-    if len(combined_data) == 0:
-        print("  Error: No valid data to plot")
-        return 1
-    
-    # Generate plot
-    model_name = ff_path.stem if ff_path.is_file() else potential_type.upper()
-    plot_energy_volume_comparison(combined_data, str(plot_output), model_name)
-    
-    end_time = datetime.now()
-    total_duration = (end_time - start_time).total_seconds()
-    
-    print("\n" + "=" * 80)
-    print(f"Workflow complete! Total time: {total_duration:.1f}s ({total_duration/60:.1f}min)")
-    print("=" * 80)
-    
-    print(f"\nResults location:")
-    print(f"  Raw data: {output_dir}")
-    print(f"  Plot: {plot_output}")
-    
-    return 0
+    results_root = ONE_CLICK_CONFIG["results_root"]
+    (results_root / "raw_data").mkdir(parents=True, exist_ok=True)
+    (results_root / "figures").mkdir(parents=True, exist_ok=True)
 
+    for ff in ONE_CLICK_CONFIG["forcefields"]:
+        if not ff["path"].exists():
+            raise FileNotFoundError(f"Forcefield path not found: {ff['path']}")
+    for s in ONE_CLICK_CONFIG["structures"]:
+        if not s["xyz"].exists():
+            raise FileNotFoundError(f"Structure xyz not found: {s['xyz']}")
+    for lv in ONE_CLICK_CONFIG["lammps_versions"]:
+        if not lv["exe"].exists():
+            raise FileNotFoundError(f"LAMMPS executable not found: {lv['exe']}")
 
-def main_multi_model(args):
-    """Multi-model comparison workflow"""
-    workspace_root = Path(__file__).parent.parent
-    test_xyz_path = Path(args.test_xyz)
-    
-    if not test_xyz_path.exists():
-        print(f"Error: Test xyz file {args.test_xyz} does not exist")
-        return 1
-    
+    all_results = {}
+    for s in ONE_CLICK_CONFIG["structures"]:
+        for ff in ONE_CLICK_CONFIG["forcefields"]:
+            for lv in ONE_CLICK_CONFIG["lammps_versions"]:
+                case_key, combined_data, raw_data_dir, single_plot_path = run_one_case(
+                    structure_tag=s["tag"],
+                    structure_xyz=s["xyz"],
+                    forcefield_tag=ff["tag"],
+                    forcefield_path=ff["path"],
+                    potential_type=ff["potential_type"],
+                    lammps_tag=lv["tag"],
+                    lammps_exe=lv["exe"],
+                )
+                if combined_data is not None:
+                    all_results[(s["tag"], ff["tag"], lv["tag"])] = {
+                        "case_key": case_key,
+                        "data": combined_data,
+                        "raw_data_dir": raw_data_dir,
+                        "single_plot_path": single_plot_path,
+                    }
+
+    figure_dir = results_root / "figures"
+    for ff in ONE_CLICK_CONFIG["forcefields"]:
+        for lv in ONE_CLICK_CONFIG["lammps_versions"]:
+            key_opted = ("opted", ff["tag"], lv["tag"])
+            key_before = ("before_opt", ff["tag"], lv["tag"])
+            if key_opted in all_results and key_before in all_results:
+                out = figure_dir / f"compare_structure__{ff['tag']}__{lv['tag']}__opted_vs_before_opt.png"
+                plot_multi_model_comparison(
+                    [all_results[key_opted]["data"], all_results[key_before]["data"]],
+                    str(out),
+                    ["opted", "before_opt"],
+                )
+
+    for s in ONE_CLICK_CONFIG["structures"]:
+        for lv in ONE_CLICK_CONFIG["lammps_versions"]:
+            key_tabgap = (s["tag"], "tabgap", lv["tag"])
+            key_nep = (s["tag"], "nep", lv["tag"])
+            if key_tabgap in all_results and key_nep in all_results:
+                out = figure_dir / f"compare_forcefield__{s['tag']}__{lv['tag']}__tabgap_vs_nep.png"
+                plot_multi_model_comparison(
+                    [all_results[key_tabgap]["data"], all_results[key_nep]["data"]],
+                    str(out),
+                    ["TABGAP", "NEP"],
+                )
+
+    total_duration = (datetime.now() - start_time).total_seconds()
+    if len(all_results) == 0:
+        raise RuntimeError("No valid cases finished. Please check LAMMPS plugin support and lammps.log files.")
     print("=" * 100)
-    print("Multi-Model Energy-Volume Comparison Workflow")
+    print(f"One-click workflow complete in {total_duration:.1f}s")
+    print(f"Results root: {results_root}")
+    print(f"Raw data dir: {results_root / 'raw_data'}")
+    print(f"Figure dir: {results_root / 'figures'}")
     print("=" * 100)
-    print(f"Number of models: {len(args.forcefield)}")
-    print(f"Test xyz: {test_xyz_path}")
-    print(f"Output name: {args.output_name}")
-    print(f"LAMMPS: {args.lammps} (version: {args.lammps_version})")
-    print("=" * 100)
-    
-    start_time = datetime.now()
-    
-    # First pass: detect if tabGAP is present
-    has_tabgap = False
-    potential_types = []
-    
-    for forcefield in args.forcefield:
-        ff_path = Path(forcefield)
-        if ff_path.is_file() and ff_path.suffix == '.txt':
-            potential_type = "nep"
-        elif ff_path.is_dir():
-            potential_type = "tabgap"
-            has_tabgap = True
-        else:
-            potential_type = "tabgap"
-            has_tabgap = True
-        potential_types.append(potential_type)
-    
-    # Determine baseline alignment strategy
-    if has_tabgap:
-        print("\n⚠️  TabGAP detected: All energies will be aligned to TabGAP baseline")
-        print("   - DFT energies: NEP → TabGAP baseline conversion")
-        print("   - NEP predictions: NEP → TabGAP baseline conversion")
-        print("   - TabGAP predictions: No conversion (already on TabGAP baseline)")
-        align_to_tabgap = True
-    else:
-        print("\n📌 No TabGAP detected: Using NEP baseline (no energy alignment)")
-        align_to_tabgap = False
-    
-    # Initialize energy aligner if needed
-    aligner = EnergyAligner() if align_to_tabgap else None
-    
-    # Process each model
-    all_model_data = []
-    model_names = []
-    test_names = []
-    
-    for model_idx, forcefield in enumerate(args.forcefield):
-        print(f"\n{'='*100}")
-        print(f"Processing Model {model_idx + 1}/{len(args.forcefield)}: {forcefield}")
-        print(f"{'='*100}")
-        
-        potential_type = potential_types[model_idx]
-        
-        # Generate test name for this model
-        test_name = generate_test_name(forcefield)
-        test_names.append(test_name)
-        
-        # Get model display name
-        ff_path = Path(forcefield)
-        if args.name and model_idx < len(args.name):
-            model_name = args.name[model_idx]
-        else:
-            model_name = ff_path.stem if ff_path.is_file() else potential_type.upper()
-        model_names.append(model_name)
-        
-        raw_data_dir = workspace_root / "run" / "raw_data" / test_name
-        
-        print(f"  Model name: {model_name}")
-        print(f"  Potential type: {potential_type.upper()}")
-        print(f"  Test name: {test_name}")
-        print(f"  Raw data dir: {raw_data_dir}")
-        print(f"  LAMMPS: {args.lammps} (version: {args.lammps_version})")
-        if align_to_tabgap and potential_type == "nep":
-            print(f"  Energy alignment: NEP → TabGAP baseline")
-        
-        # Set default run script based on potential type
-        run_script = args.run_script
-        if run_script is None:
-            run_script = "scripts/run_nep.in" if potential_type == "nep" else "scripts/run_gap.in"
-        
-        # Run LAMMPS workflow if not skipped
-        if not args.skip_run:
-            print(f"\n  [Model {model_idx + 1}] Running LAMMPS workflow...")
-            
-            # Step 1: Split xyz file
-            print(f"    [1/5] Splitting xyz file...")
-            frames = read_xyz_frames(str(test_xyz_path))
-            save_frames_to_folders(frames, str(raw_data_dir))
-            print(f"    ✓ Saved {len(frames)} frames")
-            
-            # Step 2: Convert to LAMMPS format
-            print(f"    [2/5] Converting to LAMMPS format...")
-            success, fail = convert_structures_to_lammps(str(raw_data_dir))
-            print(f"    ✓ Conversion: {success} successful, {fail} failed")
-            
-            # Step 3: Link forcefield files
-            print(f"    [3/5] Linking forcefield files...")
-            ff_count = create_symlinks_forcefield(forcefield, str(raw_data_dir), potential_type)
-            print(f"    ✓ Created {ff_count} forcefield symlinks")
-            
-            # Step 4: Link run.in script
-            print(f"    [4/5] Linking run.in script...")
-            run_count = create_symlinks_run_script(run_script, str(raw_data_dir))
-            print(f"    ✓ Created {run_count} run.in symlinks")
-            
-            # Step 5: Run LAMMPS
-            print(f"    [5/5] Running LAMMPS calculations...")
-            
-            lammps_candidate = args.lammps
-            found = shutil.which(lammps_candidate)
-            lammps_path = Path(found) if found else Path(lammps_candidate).resolve()
-            if not lammps_path.exists() or not os.access(str(lammps_path), os.X_OK):
-                print(f"    Error: Cannot find executable LAMMPS ({args.lammps}), check PATH or provide absolute path")
-                return 1
-            
-            subdirs = [d for d in raw_data_dir.iterdir() if d.is_dir() and (d / "run.in").exists()]
-            subdirs = sorted(subdirs)
-            
-            if args.max_jobs is not None and args.max_jobs > 0:
-                subdirs = subdirs[:args.max_jobs]
-            
-            n_cores = args.n_cores if args.n_cores else os.cpu_count()
-            print(f"    Starting {len(subdirs)} jobs (using {n_cores} processes)...")
-            
-            success_count = 0
-            fail_count = 0
-            completed = 0
-            
-            tasks = [(lammps_path, subdir, i+1, len(subdirs)) for i, subdir in enumerate(subdirs)]
-            
-            with ProcessPoolExecutor(max_workers=n_cores) as executor:
-                future_to_task = {executor.submit(run_lammps_wrapper, task): task for task in tasks}
-                
-                for future in as_completed(future_to_task):
-                    completed += 1
-                    try:
-                        index, dir_name, success, message = future.result()
-                        
-                        if success:
-                            success_count += 1
-                        else:
-                            fail_count += 1
-                            
-                    except Exception as e:
-                        fail_count += 1
-            
-            print(f"    ✓ Run complete: {success_count} successful, {fail_count} failed")
-        else:
-            print(f"\n  [Model {model_idx + 1}] Skipped LAMMPS run (using existing results)")
-        
-        # Collect data for this model
-        print(f"\n  [Model {model_idx + 1}] Collecting prediction data...")
-        
-        # Read test.xyz structures with energy alignment
-        # All DFT energies use TabGAP baseline if align_to_tabgap is True
-        structures = read_test_xyz(str(test_xyz_path), align_for_tabgap=align_to_tabgap)
-        
-        # Collect predicted energies
-        predicted_energies = collect_predicted_energies(raw_data_dir)
-        
-        # Combine structure data with predictions
-        combined_data = combine_data(structures, predicted_energies)
-        
-        # Apply energy alignment to NEP predictions if needed
-        if align_to_tabgap and potential_type == "nep" and len(combined_data) > 0:
-            print(f"    Applying TabGAP baseline alignment to NEP predictions...")
-            
-            # Build a mapping from combined_data index to structure
-            # combined_data only contains valid predictions, so we need to match carefully
-            valid_idx = 0
-            for struct_idx, struct in enumerate(structures):
-                if predicted_energies[struct_idx] is not None and valid_idx < len(combined_data):
-                    # This structure has a valid prediction
-                    if 'alignment_offset' in struct:
-                        # Apply the same offset to predicted energy
-                        combined_data[valid_idx]['predicted_energy_per_atom'] += struct['alignment_offset']
-                    valid_idx += 1
-            
-            print(f"    ✓ Energy alignment applied to {len(combined_data)} NEP predictions")
-        
-        if len(combined_data) == 0:
-            print(f"    Warning: No valid data for model {model_name}")
-            all_model_data.append([])
-        else:
-            all_model_data.append(combined_data)
-            print(f"    ✓ Collected {len(combined_data)} valid data points")
-    
-    # Generate multi-model comparison plot
-    print(f"\n{'='*100}")
-    print("Generating Multi-Model Comparison Plot")
-    print(f"{'='*100}")
-    
-    # Filter out empty models
-    valid_data = []
-    valid_names = []
-    for i, data in enumerate(all_model_data):
-        if len(data) > 0:
-            valid_data.append(data)
-            valid_names.append(model_names[i])
-    
-    if len(valid_data) == 0:
-        print("Error: No valid data to plot")
-        return 1
-    
-    plot_output = workspace_root / "run" / "analysis" / args.output_name / "energy_volume_comparison.png"
-    plot_output.parent.mkdir(parents=True, exist_ok=True)
-    
-    plot_multi_model_comparison(valid_data, str(plot_output), valid_names)
-    
-    end_time = datetime.now()
-    total_duration = (end_time - start_time).total_seconds()
-    
-    print("\n" + "=" * 100)
-    print(f"Multi-model workflow complete! Total time: {total_duration:.1f}s ({total_duration/60:.1f}min)")
-    print("=" * 100)
-    
-    print(f"\nResults:")
-    print(f"  Plot: {plot_output}")
-    for i, test_name in enumerate(test_names):
-        print(f"  Model {i+1} ({model_names[i]}) raw data: run/raw_data/{test_name}")
-    
     return 0
 
 
