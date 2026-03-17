@@ -808,7 +808,7 @@ def plot_energy_volume_comparison(data, output_filename, model_name="Model"):
     return plt
 
 
-def plot_multi_model_comparison(multi_model_data, output_filename, model_names=None, dft_mode="shared", title=None):
+def plot_multi_model_comparison(multi_model_data, output_filename, model_names=None, dft_mode="shared", title=None, show_predictions=True):
     """Plot multiple models vs DFT energy-volume comparison
     
     Args:
@@ -952,35 +952,36 @@ def plot_multi_model_comparison(multi_model_data, output_filename, model_names=N
                 ax.plot(volumes, dft_energies_shared, color=color, alpha=0.3,
                        linewidth=2, linestyle=':', zorder=5)
         
-        # Plot each model's predictions
-        for model_idx in range(len(multi_model_data)):
-            model_energies = []
-            model_volumes = []
-            
-            for item in sorted_data:
-                if model_idx in item[1]['models']:
-                    model_energies.append(item[1]['models'][model_idx])
-                    model_volumes.append(item[1]['volume'])
-                    
-                    # Collect for statistics
-                    all_stats[model_idx]['predicted'].append(item[1]['models'][model_idx])
-                    all_stats[model_idx]['dft'].append(item[1]['dft'])
-            
-            if not model_energies:
-                continue
-            
-            marker = model_markers[model_idx % len(model_markers)]
-            linestyle = model_linestyles[model_idx % len(model_linestyles)]
-            
-            # Add label for each config_type and model combination
-            label = f'{display_name} {model_names[model_idx]}'
-            
-            ax.scatter(model_volumes, model_energies, 
-                      color=color, marker=marker, s=60, alpha=0.8,
-                      label=label, zorder=8)
-            if len(model_volumes) > 1:
-                ax.plot(model_volumes, model_energies, color=color, 
-                       alpha=0.7, linewidth=1.5, linestyle=linestyle, zorder=7)
+        if show_predictions:
+            # Plot each model's predictions
+            for model_idx in range(len(multi_model_data)):
+                model_energies = []
+                model_volumes = []
+                
+                for item in sorted_data:
+                    if model_idx in item[1]['models']:
+                        model_energies.append(item[1]['models'][model_idx])
+                        model_volumes.append(item[1]['volume'])
+                        
+                        # Collect for statistics
+                        all_stats[model_idx]['predicted'].append(item[1]['models'][model_idx])
+                        all_stats[model_idx]['dft'].append(item[1]['dft'])
+                
+                if not model_energies:
+                    continue
+                
+                marker = model_markers[model_idx % len(model_markers)]
+                linestyle = model_linestyles[model_idx % len(model_linestyles)]
+                
+                # Add label for each config_type and model combination
+                label = f'{display_name} {model_names[model_idx]}'
+                
+                ax.scatter(model_volumes, model_energies, 
+                          color=color, marker=marker, s=60, alpha=0.8,
+                          label=label, zorder=8)
+                if len(model_volumes) > 1:
+                    ax.plot(model_volumes, model_energies, color=color, 
+                           alpha=0.7, linewidth=1.5, linestyle=linestyle, zorder=7)
     
     ax.set_xlabel('Volume per atom (Å³/atom)', fontsize=fontsize, fontweight='bold')
     ax.set_ylabel('Energy per atom (eV/atom)', fontsize=fontsize, fontweight='bold')
@@ -995,26 +996,27 @@ def plot_multi_model_comparison(multi_model_data, output_filename, model_names=N
     plt.savefig(output_filename, dpi=600, bbox_inches='tight')
     print(f"\nMulti-model comparison plot saved to: {output_filename}")
     
-    # Print detailed statistics
-    print("\n" + "=" * 100)
-    print("Multi-Model Prediction Accuracy Comparison")
-    print("=" * 100)
-    print(f"{'Model':<20} {'MAE (eV/atom)':<20} {'RMSE (eV/atom)':<20} {'R²':<15} {'N_points':<10}")
-    print("=" * 100)
-    
-    for model_idx, model_name in enumerate(model_names):
-        if len(all_stats[model_idx]['predicted']) > 0:
-            pred = np.array(all_stats[model_idx]['predicted'])
-            dft = np.array(all_stats[model_idx]['dft'])
-            
-            mae = np.mean(np.abs(pred - dft))
-            rmse = np.sqrt(np.mean((pred - dft)**2))
-            r2 = np.corrcoef(pred, dft)[0, 1]**2
-            n_points = len(pred)
-            
-            print(f"{model_name:<20} {mae:<20.6f} {rmse:<20.6f} {r2:<15.6f} {n_points:<10}")
-    
-    print("=" * 100)
+    if show_predictions:
+        # Print detailed statistics
+        print("\n" + "=" * 100)
+        print("Multi-Model Prediction Accuracy Comparison")
+        print("=" * 100)
+        print(f"{'Model':<20} {'MAE (eV/atom)':<20} {'RMSE (eV/atom)':<20} {'R²':<15} {'N_points':<10}")
+        print("=" * 100)
+        
+        for model_idx, model_name in enumerate(model_names):
+            if len(all_stats[model_idx]['predicted']) > 0:
+                pred = np.array(all_stats[model_idx]['predicted'])
+                dft = np.array(all_stats[model_idx]['dft'])
+                
+                mae = np.mean(np.abs(pred - dft))
+                rmse = np.sqrt(np.mean((pred - dft)**2))
+                r2 = np.corrcoef(pred, dft)[0, 1]**2
+                n_points = len(pred)
+                
+                print(f"{model_name:<20} {mae:<20.6f} {rmse:<20.6f} {r2:<15.6f} {n_points:<10}")
+        
+        print("=" * 100)
     
     return plt
 
@@ -1194,6 +1196,7 @@ def main():
             ["before_opt", "opted"],
             dft_mode="per_model",
             title="tabGAP: Before vs After Geometry Optimization",
+            show_predictions=False,
         )
     else:
         print("Skip 1.png: missing tabGAP before/opted data")
