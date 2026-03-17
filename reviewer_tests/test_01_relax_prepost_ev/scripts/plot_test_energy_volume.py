@@ -808,7 +808,7 @@ def plot_energy_volume_comparison(data, output_filename, model_name="Model"):
     return plt
 
 
-def plot_multi_model_comparison(multi_model_data, output_filename, model_names=None, dft_mode="shared"):
+def plot_multi_model_comparison(multi_model_data, output_filename, model_names=None, dft_mode="shared", title=None):
     """Plot multiple models vs DFT energy-volume comparison
     
     Args:
@@ -984,6 +984,8 @@ def plot_multi_model_comparison(multi_model_data, output_filename, model_names=N
     
     ax.set_xlabel('Volume per atom (Å³/atom)', fontsize=fontsize, fontweight='bold')
     ax.set_ylabel('Energy per atom (eV/atom)', fontsize=fontsize, fontweight='bold')
+    if title:
+        ax.set_title(title, fontsize=fontsize+2, fontweight='bold', pad=12)
     ax.grid(True, alpha=0.3)
     ax.tick_params(axis='both', labelsize=fontsize)
     ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left', fontsize=fontsize-6)
@@ -1070,10 +1072,7 @@ def run_one_case(structure_tag, structure_xyz, forcefield_tag, forcefield_path, 
     case_key = f"{structure_tag}__{forcefield_tag}__{lammps_tag}"
     results_root = ONE_CLICK_CONFIG["results_root"]
     raw_data_dir = results_root / "raw_data" / case_key
-    figure_dir = results_root / "figures"
-    figure_dir.mkdir(parents=True, exist_ok=True)
     raw_data_dir.mkdir(parents=True, exist_ok=True)
-    single_plot_path = figure_dir / f"ev_single__{case_key}.png"
     run_script = ONE_CLICK_CONFIG["run_scripts"][potential_type]
 
     print("=" * 100)
@@ -1082,12 +1081,11 @@ def run_one_case(structure_tag, structure_xyz, forcefield_tag, forcefield_path, 
     print(f"Forcefield: {forcefield_path}")
     print(f"LAMMPS: {lammps_exe}")
     print(f"Raw data: {raw_data_dir}")
-    print(f"Plot: {single_plot_path}")
     print("=" * 100)
 
     if not case_is_supported(potential_type, lammps_exe):
         print(f"Skip case: {case_key} (LAMMPS {lammps_tag} does not support pair_style {potential_type})")
-        return case_key, None, raw_data_dir, single_plot_path
+        return case_key, None, raw_data_dir
 
     if not ONE_CLICK_CONFIG["skip_run"]:
         frames = read_xyz_frames(str(structure_xyz))
@@ -1120,7 +1118,7 @@ def run_one_case(structure_tag, structure_xyz, forcefield_tag, forcefield_path, 
         print(f"Run complete: {success_count} successful, {fail_count} failed")
         if success_count == 0:
             print(f"Skip case: {case_key} (all runs failed)")
-            return case_key, None, raw_data_dir, single_plot_path
+            return case_key, None, raw_data_dir
 
     structures = read_test_xyz(str(structure_xyz), align_for_tabgap=ONE_CLICK_CONFIG["align_to_tabgap"])
     predicted_energies = collect_predicted_energies(raw_data_dir)
@@ -1136,17 +1134,15 @@ def run_one_case(structure_tag, structure_xyz, forcefield_tag, forcefield_path, 
 
     if len(combined_data) == 0:
         print(f"Skip case: {case_key} (no valid data)")
-        return case_key, None, raw_data_dir, single_plot_path
+        return case_key, None, raw_data_dir
 
-    plot_energy_volume_comparison(combined_data, str(single_plot_path), model_name=forcefield_tag.upper())
-    return case_key, combined_data, raw_data_dir, single_plot_path
+    return case_key, combined_data, raw_data_dir
 
 
 def main():
     start_time = datetime.now()
     results_root = ONE_CLICK_CONFIG["results_root"]
     (results_root / "raw_data").mkdir(parents=True, exist_ok=True)
-    (results_root / "figures").mkdir(parents=True, exist_ok=True)
 
     for ff in ONE_CLICK_CONFIG["forcefields"]:
         if not ff["path"].exists():
@@ -1159,52 +1155,61 @@ def main():
             raise FileNotFoundError(f"LAMMPS executable not found: {lv['exe']}")
 
     all_results = {}
-    for s in ONE_CLICK_CONFIG["structures"]:
-        for ff in ONE_CLICK_CONFIG["forcefields"]:
-            for lv in ONE_CLICK_CONFIG["lammps_versions"]:
-                case_key, combined_data, raw_data_dir, single_plot_path = run_one_case(
-                    structure_tag=s["tag"],
-                    structure_xyz=s["xyz"],
-                    forcefield_tag=ff["tag"],
-                    forcefield_path=ff["path"],
-                    potential_type=ff["potential_type"],
-                    lammps_tag=lv["tag"],
-                    lammps_exe=lv["exe"],
-                )
-                if combined_data is not None:
-                    all_results[(s["tag"], ff["tag"], lv["tag"])] = {
-                        "case_key": case_key,
-                        "data": combined_data,
-                        "raw_data_dir": raw_data_dir,
-                        "single_plot_path": single_plot_path,
-                    }
+    case_plan = [
+        ("before_opt", "tabgap", "lammps2025"),
+        ("opted", "tabgap", "lammps2025"),
+        ("opted", "nep", "lammps2025"),
+    ]
+    structures_map = {s["tag"]: s for s in ONE_CLICK_CONFIG["structures"]}
+    forcefields_map = {f["tag"]: f for f in ONE_CLICK_CONFIG["forcefields"]}
+    lammps_map = {l["tag"]: l for l in ONE_CLICK_CONFIG["lammps_versions"]}
 
-    figure_dir = results_root / "figures"
-    for ff in ONE_CLICK_CONFIG["forcefields"]:
-        for lv in ONE_CLICK_CONFIG["lammps_versions"]:
-            key_opted = ("opted", ff["tag"], lv["tag"])
-            key_before = ("before_opt", ff["tag"], lv["tag"])
-            if key_opted in all_results and key_before in all_results:
-                out = figure_dir / f"compare_structure__{ff['tag']}__{lv['tag']}__opted_vs_before_opt.png"
-                plot_multi_model_comparison(
-                    [all_results[key_opted]["data"], all_results[key_before]["data"]],
-                    str(out),
-                    ["opted", "before_opt"],
-                    dft_mode="per_model",
-                )
+    for structure_tag, forcefield_tag, lammps_tag in case_plan:
+        s = structures_map[structure_tag]
+        ff = forcefields_map[forcefield_tag]
+        lv = lammps_map[lammps_tag]
+        case_key, combined_data, raw_data_dir = run_one_case(
+            structure_tag=s["tag"],
+            structure_xyz=s["xyz"],
+            forcefield_tag=ff["tag"],
+            forcefield_path=ff["path"],
+            potential_type=ff["potential_type"],
+            lammps_tag=lv["tag"],
+            lammps_exe=lv["exe"],
+        )
+        if combined_data is not None:
+            all_results[(s["tag"], ff["tag"], lv["tag"])] = {
+                "case_key": case_key,
+                "data": combined_data,
+                "raw_data_dir": raw_data_dir,
+            }
 
-    for s in ONE_CLICK_CONFIG["structures"]:
-        for lv in ONE_CLICK_CONFIG["lammps_versions"]:
-            key_tabgap = (s["tag"], "tabgap", lv["tag"])
-            key_nep = (s["tag"], "nep", lv["tag"])
-            if key_tabgap in all_results and key_nep in all_results:
-                out = figure_dir / f"compare_forcefield__{s['tag']}__{lv['tag']}__tabgap_vs_nep.png"
-                plot_multi_model_comparison(
-                    [all_results[key_tabgap]["data"], all_results[key_nep]["data"]],
-                    str(out),
-                    ["TABGAP", "NEP"],
-                    dft_mode="shared",
-                )
+    key_tabgap_before = ("before_opt", "tabgap", "lammps2025")
+    key_tabgap_opted = ("opted", "tabgap", "lammps2025")
+    if key_tabgap_before in all_results and key_tabgap_opted in all_results:
+        out = results_root / "1.png"
+        plot_multi_model_comparison(
+            [all_results[key_tabgap_before]["data"], all_results[key_tabgap_opted]["data"]],
+            str(out),
+            ["before_opt", "opted"],
+            dft_mode="per_model",
+            title="tabGAP: Before vs After Geometry Optimization",
+        )
+    else:
+        print("Skip 1.png: missing tabGAP before/opted data")
+
+    key_nep_opted = ("opted", "nep", "lammps2025")
+    if key_tabgap_opted in all_results and key_nep_opted in all_results:
+        out = results_root / "2.png"
+        plot_multi_model_comparison(
+            [all_results[key_tabgap_opted]["data"], all_results[key_nep_opted]["data"]],
+            str(out),
+            ["tabGAP", "NEP"],
+            dft_mode="shared",
+            title="Optimized Structures: tabGAP vs NEP",
+        )
+    else:
+        print("Skip 2.png: missing tabGAP/NEP optimized data")
 
     total_duration = (datetime.now() - start_time).total_seconds()
     if len(all_results) == 0:
@@ -1213,7 +1218,7 @@ def main():
     print(f"One-click workflow complete in {total_duration:.1f}s")
     print(f"Results root: {results_root}")
     print(f"Raw data dir: {results_root / 'raw_data'}")
-    print(f"Figure dir: {results_root / 'figures'}")
+    print(f"Figure files: {results_root / '1.png'} and {results_root / '2.png'}")
     print("=" * 100)
     return 0
 
