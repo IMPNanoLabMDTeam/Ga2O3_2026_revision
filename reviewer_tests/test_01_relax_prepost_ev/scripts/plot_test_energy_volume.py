@@ -1195,7 +1195,7 @@ def main():
             str(out),
             ["before_opt", "opted"],
             dft_mode="per_model",
-            title="tabGAP: Before vs After Geometry Optimization",
+            title="DFT: Before vs After Geometry Optimization",
             show_predictions=False,
         )
     else:
