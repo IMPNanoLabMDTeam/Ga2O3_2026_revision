@@ -180,13 +180,12 @@ def collect_data(root_dir: str) -> Tuple[Dict, Dict, List]:
     """
     root_path = Path(root_dir)
     
+    # forces/virial 按结构分组存储（列表的列表），与 energy 保持 1:1 对齐
     dft_data = {
         'energy': [],
         'forces': [],
         'virial': [],
-        'config_types': [],  # 存储每个结构的 config_type
-        'force_structure_indices': [],  # 存储每个力分量对应的结构索引
-        'virial_structure_indices': []  # 存储每个virial分量对应的结构索引
+        'config_types': [],
     }
     
     lammps_data = {
@@ -194,25 +193,21 @@ def collect_data(root_dir: str) -> Tuple[Dict, Dict, List]:
         'forces': [],
         'virial': [],
         'config_types': [],
-        'force_structure_indices': [],
-        'virial_structure_indices': []
     }
     
-    energy_details = []  # 存储详细的能量误差信息
+    energy_details = []
     
     subdirs = sorted([d for d in root_path.iterdir() if d.is_dir()])
     
     print(f"正在收集数据...")
     success_count = 0
     fail_count = 0
-    structure_index = 0  # 结构索引计数器
     
     for subdir in subdirs:
         xyz_file = subdir / "structure.xyz"
         force_file = subdir / "dump.forces"
         summary_file = subdir / "summary.txt"
         
-        # 检查必要文件是否存在
         if not xyz_file.exists():
             fail_count += 1
             continue
@@ -222,28 +217,21 @@ def collect_data(root_dir: str) -> Tuple[Dict, Dict, List]:
             continue
         
         try:
-            # 解析DFT参考值
             dft_props = parse_xyz_properties(str(xyz_file))
-            
-            # 解析LAMMPS预测值
             lammps_forces = parse_lammps_forces(str(force_file))
-            
-            # 优先从summary.txt读取能量和virial
             lammps_summary = parse_lammps_summary(str(summary_file))
             lammps_energy = lammps_summary['energy']
             lammps_virial = lammps_summary['virial']
             
-            # 检查数据完整性
             if dft_props['energy_per_atom'] is not None and lammps_energy is not None:
                 dft_data['energy'].append(dft_props['energy_per_atom'])
                 lammps_data['energy'].append(lammps_energy)
                 dft_data['config_types'].append(dft_props['config_type'])
                 lammps_data['config_types'].append(dft_props['config_type'])
                 
-                # 计算能量误差
                 abs_error = abs(lammps_energy - dft_props['energy_per_atom'])
                 if abs(dft_props['energy_per_atom']) > 1e-6:
-                    rel_error = abs_error / abs(dft_props['energy_per_atom']) * 100  # 百分比
+                    rel_error = abs_error / abs(dft_props['energy_per_atom']) * 100
                 else:
                     rel_error = float('inf')
                 
@@ -253,27 +241,24 @@ def collect_data(root_dir: str) -> Tuple[Dict, Dict, List]:
                     lammps_energy,
                     abs_error,
                     rel_error,
-                    dft_props['config_type']  # 添加 config_type
+                    dft_props['config_type']
                 ))
-            
-            if dft_props['forces'] is not None and len(lammps_forces) > 0:
-                dft_forces_flat = dft_props['forces'].flatten()
-                lammps_forces_flat = lammps_forces.flatten()
-                dft_data['forces'].append(dft_forces_flat)
-                lammps_data['forces'].append(lammps_forces_flat)
-                # 为每个力分量记录对应的结构索引
-                dft_data['force_structure_indices'].extend([structure_index] * len(dft_forces_flat))
-                lammps_data['force_structure_indices'].extend([structure_index] * len(lammps_forces_flat))
-            
-            if dft_props['virial_per_atom'] is not None and lammps_virial is not None:
-                dft_data['virial'].append(dft_props['virial_per_atom'])
-                lammps_data['virial'].append(lammps_virial)
-                # 为每个virial分量记录对应的结构索引
-                dft_data['virial_structure_indices'].extend([structure_index] * len(dft_props['virial_per_atom']))
-                lammps_data['virial_structure_indices'].extend([structure_index] * len(lammps_virial))
+                
+                if dft_props['forces'] is not None and len(lammps_forces) > 0:
+                    dft_data['forces'].append(dft_props['forces'].flatten())
+                    lammps_data['forces'].append(lammps_forces.flatten())
+                else:
+                    dft_data['forces'].append(np.array([]))
+                    lammps_data['forces'].append(np.array([]))
+                
+                if dft_props['virial_per_atom'] is not None and lammps_virial is not None:
+                    dft_data['virial'].append(np.array(dft_props['virial_per_atom']))
+                    lammps_data['virial'].append(np.array(lammps_virial))
+                else:
+                    dft_data['virial'].append(np.array([]))
+                    lammps_data['virial'].append(np.array([]))
             
             success_count += 1
-            structure_index += 1  # 递增结构索引
             
         except Exception as e:
             print(f"  警告: {subdir.name} 处理失败 - {str(e)}")
@@ -281,35 +266,41 @@ def collect_data(root_dir: str) -> Tuple[Dict, Dict, List]:
     
     print(f"数据收集完成: 成功 {success_count} 个，失败 {fail_count} 个")
     
-    # 转换为numpy数组
     dft_data['energy'] = np.array(dft_data['energy'])
     lammps_data['energy'] = np.array(lammps_data['energy'])
     dft_data['config_types'] = np.array(dft_data['config_types'])
     lammps_data['config_types'] = np.array(lammps_data['config_types'])
     
-    if dft_data['forces']:
-        dft_data['forces'] = np.concatenate(dft_data['forces'])
-        lammps_data['forces'] = np.concatenate(lammps_data['forces'])
-        dft_data['force_structure_indices'] = np.array(dft_data['force_structure_indices'])
-        lammps_data['force_structure_indices'] = np.array(lammps_data['force_structure_indices'])
-    else:
-        dft_data['forces'] = np.array([])
-        lammps_data['forces'] = np.array([])
-        dft_data['force_structure_indices'] = np.array([])
-        lammps_data['force_structure_indices'] = np.array([])
-    
-    if dft_data['virial']:
-        dft_data['virial'] = np.array(dft_data['virial']).flatten()
-        lammps_data['virial'] = np.array(lammps_data['virial']).flatten()
-        dft_data['virial_structure_indices'] = np.array(dft_data['virial_structure_indices'])
-        lammps_data['virial_structure_indices'] = np.array(lammps_data['virial_structure_indices'])
-    else:
-        dft_data['virial'] = np.array([])
-        lammps_data['virial'] = np.array([])
-        dft_data['virial_structure_indices'] = np.array([])
-        lammps_data['virial_structure_indices'] = np.array([])
-    
     return dft_data, lammps_data, energy_details
+
+
+def flatten_per_structure_data(dft_data: Dict, lammps_data: Dict) -> Tuple[Dict, Dict]:
+    """将 per-structure 的 forces/virial 列表扁平化为 numpy 数组，并重建 structure_indices"""
+    flat_dft = {
+        'energy': dft_data['energy'],
+        'config_types': dft_data['config_types'],
+    }
+    flat_lammps = {
+        'energy': lammps_data['energy'],
+        'config_types': lammps_data['config_types'],
+    }
+    
+    for key, idx_key in [('forces', 'force_structure_indices'),
+                         ('virial', 'virial_structure_indices')]:
+        dft_parts = [arr for arr in dft_data[key] if len(arr) > 0]
+        lammps_parts = [arr for arr in lammps_data[key] if len(arr) > 0]
+        flat_dft[key] = np.concatenate(dft_parts) if dft_parts else np.array([])
+        flat_lammps[key] = np.concatenate(lammps_parts) if lammps_parts else np.array([])
+        
+        indices = []
+        for i, arr in enumerate(dft_data[key]):
+            if len(arr) > 0:
+                indices.extend([i] * len(arr))
+        idx_arr = np.array(indices, dtype=int) if indices else np.array([], dtype=int)
+        flat_dft[idx_key] = idx_arr
+        flat_lammps[idx_key] = idx_arr.copy()
+    
+    return flat_dft, flat_lammps
 
 
 def calculate_r2(true, pred):
@@ -893,9 +884,12 @@ def main():
     dft_data, lammps_data, energy_details = collect_data(str(input_path))
     
     # 检查数据
-    if len(dft_data['energy']) == 0 and len(dft_data['forces']) == 0 and len(dft_data['virial']) == 0:
+    if len(dft_data['energy']) == 0:
         print("错误：未找到有效数据")
         return 1
+    
+    # 将 per-structure 数据扁平化，用于统计和绘图
+    dft_data_flat, lammps_data_flat = flatten_per_structure_data(dft_data, lammps_data)
     
     # 保存详细能量误差CSV
     if energy_details:
@@ -904,12 +898,11 @@ def main():
     
     # 保存统计摘要
     summary_file = output_path / "error_analysis_summary.txt"
-    save_summary(dft_data, lammps_data, str(summary_file))
+    save_summary(dft_data_flat, lammps_data_flat, str(summary_file))
     
     # 绘制对比图
     plot_file = output_path / "error_analysis_comparison.png"
-    # 在 simple 模式下启用按 config_type 分类的颜色显示
-    plot_comparison(dft_data, lammps_data, str(plot_file), dataset_name=dataset_name, color_by_config=args.simple)
+    plot_comparison(dft_data_flat, lammps_data_flat, str(plot_file), dataset_name=dataset_name, color_by_config=args.simple)
     
     # 如果是简化模式，跳过低能量和相分类分析
     if args.simple:
@@ -927,94 +920,48 @@ def main():
     print("=" * 80)
     
     if len(dft_data['energy']) > 0:
-        # 找到最低能量
         min_energy = np.min(dft_data['energy'])
         energy_threshold = min_energy + args.low_energy_threshold
         
         print(f"最低DFT能量: {min_energy:.6f} eV/atom")
         print(f"能量阈值: {energy_threshold:.6f} eV/atom")
         
-        # 筛选低能量区间的数据
-        low_energy_mask = dft_data['energy'] < energy_threshold
+        energy_mask = dft_data['energy'] < energy_threshold
         
-        # 获取低能量区间的结构索引和 config_types
-        low_energy_indices = np.where(low_energy_mask)[0]  # 低能量结构的索引
-        low_energy_config_types = dft_data['config_types'][low_energy_mask]
-        
-        low_energy_dft = {
-            'energy': dft_data['energy'][low_energy_mask],
-            'forces': np.array([]),
-            'virial': np.array([]),
-            'config_types': low_energy_config_types,
-            'force_structure_indices': np.array([]),
-            'virial_structure_indices': np.array([])
+        # 用 energy_mask 直接筛选对应结构的 forces 和 virial
+        low_dft_per_struct = {
+            'energy': dft_data['energy'][energy_mask],
+            'forces': [dft_data['forces'][i] for i in range(len(energy_mask)) if energy_mask[i]],
+            'virial': [dft_data['virial'][i] for i in range(len(energy_mask)) if energy_mask[i]],
+            'config_types': dft_data['config_types'][energy_mask],
+        }
+        low_lammps_per_struct = {
+            'energy': lammps_data['energy'][energy_mask],
+            'forces': [lammps_data['forces'][i] for i in range(len(energy_mask)) if energy_mask[i]],
+            'virial': [lammps_data['virial'][i] for i in range(len(energy_mask)) if energy_mask[i]],
+            'config_types': dft_data['config_types'][energy_mask],
         }
         
-        low_energy_lammps = {
-            'energy': lammps_data['energy'][low_energy_mask],
-            'forces': np.array([]),
-            'virial': np.array([]),
-            'config_types': low_energy_config_types,
-            'force_structure_indices': np.array([]),
-            'virial_structure_indices': np.array([])
-        }
-        
-        # 创建索引映射：原始索引 -> 新索引
-        index_mapping = {old_idx: new_idx for new_idx, old_idx in enumerate(low_energy_indices)}
-        
-        # 对于力和virial，根据结构索引来筛选对应的数据
-        if len(dft_data['forces']) > 0 and len(dft_data['force_structure_indices']) > 0:
-            # 筛选属于低能量结构的力数据
-            force_mask = np.isin(dft_data['force_structure_indices'], low_energy_indices)
-            low_energy_dft['forces'] = dft_data['forces'][force_mask]
-            low_energy_lammps['forces'] = lammps_data['forces'][force_mask]
-            # 重新映射索引到新的范围 [0, len(low_energy_indices))
-            old_indices = dft_data['force_structure_indices'][force_mask]
-            new_indices = np.array([index_mapping[idx] for idx in old_indices])
-            low_energy_dft['force_structure_indices'] = new_indices
-            low_energy_lammps['force_structure_indices'] = new_indices
-        
-        if len(dft_data['virial']) > 0 and len(dft_data['virial_structure_indices']) > 0:
-            # 筛选属于低能量结构的virial数据
-            virial_mask = np.isin(dft_data['virial_structure_indices'], low_energy_indices)
-            low_energy_dft['virial'] = dft_data['virial'][virial_mask]
-            low_energy_lammps['virial'] = lammps_data['virial'][virial_mask]
-            # 重新映射索引到新的范围 [0, len(low_energy_indices))
-            old_indices = dft_data['virial_structure_indices'][virial_mask]
-            new_indices = np.array([index_mapping[idx] for idx in old_indices])
-            low_energy_dft['virial_structure_indices'] = new_indices
-            low_energy_lammps['virial_structure_indices'] = new_indices
+        low_energy_dft, low_energy_lammps = flatten_per_structure_data(
+            low_dft_per_struct, low_lammps_per_struct)
         
         print(f"筛选后样本数: {len(low_energy_dft['energy'])} / {len(dft_data['energy'])}")
         
         if len(low_energy_dft['energy']) > 0:
-            # 筛选低能量区间的能量详细信息
-            low_energy_details = []
-            for detail in energy_details:
-                if len(detail) == 6:
-                    dir_name, dft_e, lammps_e, abs_err, rel_err, config_type = detail
-                else:
-                    dir_name, dft_e, lammps_e, abs_err, rel_err = detail
-                
-                if dft_e < energy_threshold:
-                    low_energy_details.append(detail)
+            low_energy_details = [d for d in energy_details if d[1] < energy_threshold]
             
-            # 保存低能量区间统计摘要（包含误差最大的结构）
             low_energy_summary_file = output_path / "error_analysis_summary_low_energy.txt"
             save_summary(low_energy_dft, low_energy_lammps, str(low_energy_summary_file), 
                         energy_details=low_energy_details)
             
-            # 绘制低能量区间对比图
             low_energy_plot_file = output_path / "error_analysis_comparison_low_energy.png"
             plot_comparison(low_energy_dft, low_energy_lammps, str(low_energy_plot_file), 
                           title_suffix=' (Low Energy Region)', dataset_name=dataset_name)
             
-            # 按相分类的专项分析
             print("\n" + "=" * 80)
             print("按相分类的专项分析（低能量区间）")
             print("=" * 80)
             
-            # 绘制按相分类的对比图
             phase_plot_file = output_path / "error_analysis_comparison_by_phase.png"
             plot_phase_comparison(low_energy_dft, low_energy_lammps, str(phase_plot_file), 
                                 dataset_name=dataset_name)
